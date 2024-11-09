@@ -361,7 +361,7 @@ if "--cuda_ext" in sys.argv:
             CUDAExtension(name='fused_weight_gradient_mlp_cuda',
                           sources=['csrc/megatron/fused_weight_gradient_dense.cpp',
                                    'csrc/megatron/fused_weight_gradient_dense_cuda.cu',
-                                   'csrc/megatron/fused_weight_gradient_dense_16bit_pre_cuda.cu',
+                                   'csrc/megatron/fused_weight_gradient_dense_16bit_prec_cuda.cu',
                                    ],
                           include_dirs=[os.path.join(this_dir, 'csrc')],
                           extra_compile_args={'cxx': ['-O3'] + version_dependent_macros,
