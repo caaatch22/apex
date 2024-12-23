@@ -1,36 +1,15 @@
-import sys
-import warnings
-import os
-import glob
-from packaging.version import parse, Version
-
+import torch
+from torch.utils.cpp_extension import BuildExtension, CppExtension, CUDAExtension, CUDA_HOME, ROCM_HOME
 from setuptools import setup, find_packages
 import subprocess
 
-import torch
-from torch.utils.cpp_extension import (
-        BuildExtension, 
-        CppExtension, 
-        CUDAExtension, 
-        CUDA_HOME, 
-        ROCM_HOME,
-        load,
-     )
-
+import sys
+import warnings
+import os
 
 # ninja build does not work unless include_dirs are abs path
 this_dir = os.path.dirname(os.path.abspath(__file__))
 torch_dir = torch.__path__[0]
-
-
-def hipBLASlt_supported():
-    supported_arch = ['gfx942']
-    #torch.cuda.get_device_properties might fail if env does not have visible GPUs.
-    if torch.cuda.is_available():
-        device_props = torch.cuda.get_device_properties(0);
-        if device_props.gcnArchName.split(":",1)[0] in supported_arch:
-            return True
-    return False
 
 # https://github.com/pytorch/pytorch/pull/71881
 # For the extensions which have rocblas_gemm_flags_fp16_alt_impl we need to make sure if at::BackwardPassGuard exists.
@@ -63,6 +42,7 @@ def get_cuda_bare_metal_version(cuda_dir):
     release = output[release_idx].split(".")
     bare_metal_major = release[0]
     bare_metal_minor = release[1][0]
+
     return raw_output, bare_metal_major, bare_metal_minor
 
 def get_rocm_bare_metal_version(rocm_dir):
@@ -72,6 +52,7 @@ def get_rocm_bare_metal_version(rocm_dir):
     release = output[release_idx].split(".")
     bare_metal_major = release[0]
     bare_metal_minor = release[1][0]
+
     return raw_output, bare_metal_major, bare_metal_minor
 
 def check_cuda_torch_binary_vs_bare_metal(cuda_dir):
@@ -110,14 +91,24 @@ def check_rocm_torch_binary_vs_bare_metal(rocm_dir):
             "You can try commenting out this check (at your own risk)."
         )
 
-def raise_if_home_none(global_option: str) -> None:
-    if CUDA_HOME is not None or ROCM_HOME is not None:
+def raise_if_cuda_home_none(global_option: str) -> None:
+    if CUDA_HOME is not None:
         return
     raise RuntimeError(
         f"{global_option} was requested, but nvcc was not found.  Are you sure your environment has nvcc available?  "
         "If you're installing within a container from https://hub.docker.com/r/pytorch/pytorch, "
         "only images whose names contain 'devel' will provide nvcc."
     )
+
+def raise_if_rocm_home_none(global_option: str) -> None:
+    if ROCM_HOME is not None:
+        return
+    raise RuntimeError(
+        f"{global_option} was requested, but hipcc was not found.  Are you sure your environment has hipcc available?  "
+        "If you're installing within a container from https://hub.docker.com/r/pytorch/pytorch, "
+        "only images whose names contain 'devel' will provide hipcc."
+    )
+
 
 def get_apex_version():
     cwd = os.path.dirname(os.path.abspath(__file__))
@@ -160,19 +151,12 @@ ROCM_MINOR = int(torch.version.hip.split('.')[1])
 def check_if_rocm_pytorch():
     is_rocm_pytorch = False
     if TORCH_MAJOR > 1 or (TORCH_MAJOR == 1 and TORCH_MINOR >= 5):
+        from torch.utils.cpp_extension import ROCM_HOME
         is_rocm_pytorch = True if ((torch.version.hip is not None) and (ROCM_HOME is not None)) else False
+
     return is_rocm_pytorch
 
 IS_ROCM_PYTORCH = check_if_rocm_pytorch()
-
-#ToDo: remove hipBLASlt_supported(), determine in run time
-#if device is gfx942 and call hipblasLT functions.
-#Remove IS_HIPBLASLT_SUPPORTED and HIPBLASLT
-#For now, IS_HIPBLASLT_SUPPORTED is True always
-
-#IS_HIPBLASLT_SUPPORTED = hipBLASlt_supported()
-IS_HIPBLASLT_SUPPORTED = True
-print(f"INFO: IS_HIPBLASLT_SUPPORTED value is {IS_HIPBLASLT_SUPPORTED}")
 
 if not torch.cuda.is_available() and not IS_ROCM_PYTORCH:
     # https://github.com/NVIDIA/apex/issues/486
@@ -211,6 +195,14 @@ ext_modules = []
 
 extras = {}
 
+if "--cpp_ext" in sys.argv or "--cuda_ext" in sys.argv:
+    if TORCH_MAJOR == 0:
+        raise RuntimeError("--cpp_ext requires Pytorch 1.0 or later, "
+                           "found torch.__version__ = {}".format(torch.__version__))
+if "--cpp_ext" in sys.argv:
+    sys.argv.remove("--cpp_ext")
+    ext_modules.append(CppExtension("apex_C", ["csrc/flatten_unflatten.cpp"]))
+
 # Set up macros for forward/backward compatibility hack around
 # https://github.com/pytorch/pytorch/commit/4404762d7dd955383acee92e6f06b48144a0742e
 # and
@@ -227,277 +219,145 @@ if (TORCH_MAJOR > 1) or (TORCH_MAJOR == 1 and TORCH_MINOR > 4):
     version_ge_1_5 = ["-DVERSION_GE_1_5"]
 version_dependent_macros = version_ge_1_1 + version_ge_1_3 + version_ge_1_5
 
-if not IS_ROCM_PYTORCH:
-    _, bare_metal_version = get_cuda_bare_metal_version(CUDA_HOME)
-else:
-    _, bare_metal_version, bare_metal_minor  = get_rocm_bare_metal_version(ROCM_HOME)
-
 if IS_ROCM_PYTORCH and (ROCM_MAJOR >= 6):
     version_dependent_macros += ["-DHIPBLAS_V2"] 
 
-if IS_HIPBLASLT_SUPPORTED:
-    version_dependent_macros += ["-DHIPBLASLT"]
 
-if "--cpp_ext" in sys.argv or "--cuda_ext" in sys.argv:
-    if TORCH_MAJOR == 0:
-        raise RuntimeError("--cpp_ext requires Pytorch 1.0 or later, "
-                           "found torch.__version__ = {}".format(torch.__version__)
-                           )
-
-if "--cpp_ext" in sys.argv:
-    sys.argv.remove("--cpp_ext")
-    ext_modules.append(CppExtension("apex_C", ["csrc/flatten_unflatten.cpp"]))
 
 if "--distributed_adam" in sys.argv or "--cuda_ext" in sys.argv:
     if "--distributed_adam" in sys.argv:
         sys.argv.remove("--distributed_adam")
 
-    raise_if_home_none("--distributed_adam")
-    nvcc_args_adam = ['-O3', '--use_fast_math'] + version_dependent_macros
-    hipcc_args_adam = ['-O3'] + version_dependent_macros
-    ext_modules.append(
-        CUDAExtension(
-            name='distributed_adam_cuda',
-            sources=[
-                'apex/contrib/csrc/optimizers/multi_tensor_distopt_adam.cpp',
-                'apex/contrib/csrc/optimizers/multi_tensor_distopt_adam_kernel.cu',
-            ],
-            include_dirs=[
-                os.path.join(this_dir, 'csrc'),
-                os.path.join(this_dir, 'apex/contrib/csrc/optimizers'),
-            ],
-            extra_compile_args={
-                'cxx': ['-O3',] + version_dependent_macros,
-                'nvcc':nvcc_args_adam if not IS_ROCM_PYTORCH else hipcc_args_adam,
-            }
-        )
-    )
+    if torch.utils.cpp_extension.CUDA_HOME is None and not IS_ROCM_PYTORCH:
+        raise RuntimeError("--distributed_adam was requested, but nvcc was not found.  Are you sure your environment has nvcc available?  If you're installing within a container from https://hub.docker.com/r/pytorch/pytorch, only images whose names contain 'devel' will provide nvcc.")
+    else:
+        nvcc_args_adam = ['-O3', '--use_fast_math'] + version_dependent_macros
+        hipcc_args_adam = ['-O3'] + version_dependent_macros
+        ext_modules.append(
+            CUDAExtension(name='distributed_adam_cuda',
+                          sources=['apex/contrib/csrc/optimizers/multi_tensor_distopt_adam.cpp',
+                                   'apex/contrib/csrc/optimizers/multi_tensor_distopt_adam_kernel.cu'],
+                          include_dirs=[os.path.join(this_dir, 'csrc'),
+                                        os.path.join(this_dir, 'apex/contrib/csrc/optimizers')],
+                          extra_compile_args={'cxx': ['-O3',] + version_dependent_macros,
+                                              'nvcc':nvcc_args_adam if not IS_ROCM_PYTORCH else hipcc_args_adam}))
 
 if "--distributed_lamb" in sys.argv or "--cuda_ext" in sys.argv:
     if "--distributed_lamb" in sys.argv:
         sys.argv.remove("--distributed_lamb")
 
-    raise_if_home_none("--distributed_lamb")
-
-    print ("INFO: Building the distributed_lamb extension.")
-    nvcc_args_distributed_lamb = ['-O3', '--use_fast_math'] + version_dependent_macros
-    hipcc_args_distributed_lamb = ['-O3'] + version_dependent_macros
-    ext_modules.append(
-        CUDAExtension(
-            name='distributed_lamb_cuda',
-            sources=[
-                'apex/contrib/csrc/optimizers/multi_tensor_distopt_lamb.cpp',
-                'apex/contrib/csrc/optimizers/multi_tensor_distopt_lamb_kernel.cu',
-            ],
-            include_dirs=[os.path.join(this_dir, 'csrc')],
-            extra_compile_args={
-                'cxx': ['-O3',] + version_dependent_macros,
-                'nvcc': nvcc_args_distributed_lamb if not IS_ROCM_PYTORCH else hipcc_args_distributed_lamb,
-                }
-            )
-        )
+    if torch.utils.cpp_extension.CUDA_HOME is None and not IS_ROCM_PYTORCH:
+        raise RuntimeError("--distributed_lamb was requested, but nvcc was not found.  Are you sure your environment has nvcc available?  If you're installing within a container from https://hub.docker.com/r/pytorch/pytorch, only images whose names contain 'devel' will provide nvcc.")
+    else:
+        print ("INFO: Building the distributed_lamb extension.")
+        nvcc_args_distributed_lamb = ['-O3', '--use_fast_math'] + version_dependent_macros
+        hipcc_args_distributed_lamb = ['-O3'] + version_dependent_macros
+        ext_modules.append(
+            CUDAExtension(name='distributed_lamb_cuda',
+                          sources=['apex/contrib/csrc/optimizers/multi_tensor_distopt_lamb.cpp',
+                                   'apex/contrib/csrc/optimizers/multi_tensor_distopt_lamb_kernel.cu'],
+                          include_dirs=[os.path.join(this_dir, 'csrc')],
+                          extra_compile_args={'cxx': ['-O3',] + version_dependent_macros,
+                                              'nvcc': nvcc_args_distributed_lamb if not IS_ROCM_PYTORCH else hipcc_args_distributed_lamb}))
 
 if "--cuda_ext" in sys.argv:
-    raise_if_home_none("--cuda_ext")
-    
-    if not IS_ROCM_PYTORCH:
-        check_cuda_torch_binary_vs_bare_metal(CUDA_HOME)
+    if torch.utils.cpp_extension.CUDA_HOME is None and torch.utils.cpp_extension.ROCM_HOME is None:
+        raise RuntimeError("--cuda_ext was requested, but nvcc or hipcc was not found.  Are you sure your environment has nvcc available?  If you're installing within a container from https://hub.docker.com/r/pytorch/pytorch, only images whose names contain 'devel' will provide nvcc.")
     else:
-        check_rocm_torch_binary_vs_bare_metal(ROCM_HOME)
+        if not IS_ROCM_PYTORCH:
+            check_cuda_torch_binary_vs_bare_metal(torch.utils.cpp_extension.CUDA_HOME)
+        else:
+            check_rocm_torch_binary_vs_bare_metal(torch.utils.cpp_extension.ROCM_HOME)
 
-#**********  multi-tensor apply  ****************
-    print ("INFO: Building the multi-tensor apply extension.")
-    nvcc_args_multi_tensor = ['-lineinfo', '-O3', '--use_fast_math'] + version_dependent_macros
-    hipcc_args_multi_tensor = ['-O3'] + version_dependent_macros
-    ext_modules.append(
-        CUDAExtension(
-            name='amp_C',
-            sources=[
-                'csrc/amp_C_frontend.cpp',
-                'csrc/multi_tensor_sgd_kernel.cu',
-                'csrc/multi_tensor_scale_kernel.cu',
-                'csrc/multi_tensor_axpby_kernel.cu',
-                'csrc/multi_tensor_l2norm_kernel.cu',
-                'csrc/multi_tensor_l2norm_kernel_mp.cu',
-                'csrc/multi_tensor_l2norm_scale_kernel.cu',
-                'csrc/multi_tensor_lamb_stage_1.cu',
-                'csrc/multi_tensor_lamb_stage_2.cu',
-                'csrc/multi_tensor_adam.cu',
-                'csrc/multi_tensor_adagrad.cu',
-                'csrc/multi_tensor_novograd.cu',
-                'csrc/multi_tensor_lars.cu',
-                'csrc/multi_tensor_lamb.cu',
-                'csrc/multi_tensor_lamb_mp.cu'],
-            include_dirs=[os.path.join(this_dir, 'csrc')],
-            extra_compile_args={'cxx': ['-O3'] + version_dependent_macros,
-                                'nvcc': nvcc_args_multi_tensor if not IS_ROCM_PYTORCH else hipcc_args_multi_tensor,
-                                }
-            )
-        )
+        print ("INFO: Building the multi-tensor apply extension.")
+        nvcc_args_multi_tensor = ['-lineinfo', '-O3', '--use_fast_math'] + version_dependent_macros
+        hipcc_args_multi_tensor = ['-O3'] + version_dependent_macros
+        ext_modules.append(
+            CUDAExtension(name='amp_C',
+                          sources=['csrc/amp_C_frontend.cpp',
+                                   'csrc/multi_tensor_sgd_kernel.cu',
+                                   'csrc/multi_tensor_scale_kernel.cu',
+                                   'csrc/multi_tensor_axpby_kernel.cu',
+                                   'csrc/multi_tensor_l2norm_kernel.cu',
+                                   'csrc/multi_tensor_l2norm_kernel_mp.cu',
+                                   'csrc/multi_tensor_l2norm_scale_kernel.cu',
+                                   'csrc/multi_tensor_lamb_stage_1.cu',
+                                   'csrc/multi_tensor_lamb_stage_2.cu',
+                                   'csrc/multi_tensor_adam.cu',
+                                   'csrc/multi_tensor_adagrad.cu',
+                                   'csrc/multi_tensor_novograd.cu',
+                                   'csrc/multi_tensor_lars.cu',
+                                   'csrc/multi_tensor_lamb.cu',
+                                   'csrc/multi_tensor_lamb_mp.cu'],
+                          include_dirs=[os.path.join(this_dir, 'csrc')],
+                          extra_compile_args={'cxx': ['-O3'] + version_dependent_macros,
+                                              'nvcc': nvcc_args_multi_tensor if not IS_ROCM_PYTORCH else hipcc_args_multi_tensor}))
 
-#**********  syncbn  ****************
-    print("INFO: Building syncbn extension.")
-    ext_modules.append(
-        CUDAExtension(
-            name='syncbn',
-            sources=[
-                'csrc/syncbn.cpp',
-                'csrc/welford.cu',
-            ],
-            include_dirs=[os.path.join(this_dir, 'csrc')],
-            extra_compile_args={
-                'cxx': ['-O3'] + version_dependent_macros,
-                'nvcc':['-O3'] + version_dependent_macros,
-                }
-            )
-        )
+        print ("INFO: Building syncbn extension.")
+        ext_modules.append(
+            CUDAExtension(name='syncbn',
+                          sources=['csrc/syncbn.cpp',
+                                   'csrc/welford.cu'],
+                          include_dirs=[os.path.join(this_dir, 'csrc')],
+                          extra_compile_args={'cxx': ['-O3'] + version_dependent_macros,
+                                              'nvcc':['-O3'] + version_dependent_macros}))
 
-#**********  fused layernorm  ****************
-    nvcc_args_layer_norm = ['-maxrregcount=50', '-O3', '--use_fast_math'] + version_dependent_macros
-    hipcc_args_layer_norm = ['-O3'] + version_dependent_macros
+        nvcc_args_layer_norm = ['-maxrregcount=50', '-O3', '--use_fast_math'] + version_dependent_macros
+        hipcc_args_layer_norm = ['-O3'] + version_dependent_macros
+        print ("INFO: Building fused layernorm extension.")
+        ext_modules.append(
+            CUDAExtension(name='fused_layer_norm_cuda',
+                          sources=['csrc/layer_norm_cuda.cpp',
+                                   'csrc/layer_norm_cuda_kernel.cu'],
+                          include_dirs=[os.path.join(this_dir, 'csrc')],
+                          extra_compile_args={'cxx': ['-O3'] + version_dependent_macros,
+                                              'nvcc': nvcc_args_layer_norm if not IS_ROCM_PYTORCH else hipcc_args_layer_norm}))
 
-    print ("INFO: Building fused layernorm extension.")
-    ext_modules.append(
-        CUDAExtension(
-            name='fused_layer_norm_cuda',
-            sources=[
-                'csrc/layer_norm_cuda.cpp',
-                'csrc/layer_norm_cuda_kernel.cu',
-            ],
-            include_dirs=[os.path.join(this_dir, 'csrc')],
-            extra_compile_args={
-                'cxx': ['-O3'] + version_dependent_macros,
-                'nvcc': nvcc_args_layer_norm if not IS_ROCM_PYTORCH else hipcc_args_layer_norm,
-                }
-            )
-        )
+        hipcc_args_mlp = ['-O3'] + version_dependent_macros
+        if found_Backward_Pass_Guard:
+            hipcc_args_mlp = hipcc_args_mlp + ['-DBACKWARD_PASS_GUARD'] + ['-DBACKWARD_PASS_GUARD_CLASS=BackwardPassGuard']
+        if found_ROCmBackward_Pass_Guard:
+            hipcc_args_mlp = hipcc_args_mlp + ['-DBACKWARD_PASS_GUARD'] + ['-DBACKWARD_PASS_GUARD_CLASS=ROCmBackwardPassGuard']
 
-#**********  fused dense  ****************
-    ext_modules.append(
-        CUDAExtension(
-            name='fused_dense_cuda',
-            sources=[
-                'csrc/fused_dense_base.cpp',
-                'csrc/fused_dense_cuda.cu',
-            ],
-            extra_compile_args={
-                'cxx': ['-O3'] + version_dependent_macros,
-                'nvcc':['-O3'] + version_dependent_macros
-                }
-            )
-        )
-#**********  mlp_cuda  ****************
-    hipcc_args_mlp = ['-O3'] + version_dependent_macros
-    if found_Backward_Pass_Guard:
-        hipcc_args_mlp = hipcc_args_mlp + ['-DBACKWARD_PASS_GUARD'] + ['-DBACKWARD_PASS_GUARD_CLASS=BackwardPassGuard']
-    if found_ROCmBackward_Pass_Guard:
-        hipcc_args_mlp = hipcc_args_mlp + ['-DBACKWARD_PASS_GUARD'] + ['-DBACKWARD_PASS_GUARD_CLASS=ROCmBackwardPassGuard']
+        print ("INFO: Building the MLP Extension.")
+        ext_modules.append(
+            CUDAExtension(name='mlp_cuda',
+                          sources=['csrc/mlp.cpp',
+                                   'csrc/mlp_cuda.cu'],
+                          include_dirs=[os.path.join(this_dir, 'csrc')],
+                          extra_compile_args={'cxx': ['-O3'] + version_dependent_macros,
+                                              'nvcc':['-O3'] + version_dependent_macros
+                                              if not IS_ROCM_PYTORCH else hipcc_args_mlp}))
 
-    print ("INFO: Building the MLP Extension.")
-    ext_modules.append(
-        CUDAExtension(
-            name='mlp_cuda',
-            sources=[
-                'csrc/mlp.cpp',
-                'csrc/mlp_cuda.cu',
-            ],
-            include_dirs=[os.path.join(this_dir, 'csrc')],
-            extra_compile_args={
-                'cxx': ['-O3'] + version_dependent_macros,
-                'nvcc':['-O3'] + version_dependent_macros if not IS_ROCM_PYTORCH else hipcc_args_mlp,
-                }
-            )
-        )
-
-#**********  scaled_upper_triang_masked_softmax_cuda  ****************
-    nvcc_args_transformer = ['-O3',
-                             '-U__CUDA_NO_HALF_OPERATORS__',
-                             '-U__CUDA_NO_HALF_CONVERSIONS__',
-                             '--expt-relaxed-constexpr',
-                             '--expt-extended-lambda'] + version_dependent_macros
-    hipcc_args_transformer = ['-O3',
-                              '-U__CUDA_NO_HALF_OPERATORS__',
-                              '-U__CUDA_NO_HALF_CONVERSIONS__'] + version_dependent_macros
-
-    ext_modules.append(
-        CUDAExtension(
-            name='scaled_upper_triang_masked_softmax_cuda',
-            sources=[
-                 'csrc/megatron/scaled_upper_triang_masked_softmax_cpu.cpp',
-                 'csrc/megatron/scaled_upper_triang_masked_softmax_cuda.cu',
-             ],
-             include_dirs=[os.path.join(this_dir, 'csrc')],
-             extra_compile_args={
-                'cxx': ['-O3'] + version_dependent_macros,
-                'nvcc':nvcc_args_transformer if not IS_ROCM_PYTORCH else hipcc_args_transformer,
-                 }
-             )
-        )
-#*********** generic_scaled_masked_softmax_cuda   ****************
-    ext_modules.append(
-        CUDAExtension(
-            name="generic_scaled_masked_softmax_cuda",
-            sources=[
-                "csrc/megatron/generic_scaled_masked_softmax_cpu.cpp",
-                "csrc/megatron/generic_scaled_masked_softmax_cuda.cu",
-            ],
-            include_dirs=[os.path.join(this_dir, "csrc")],
-            extra_compile_args={
-                "cxx": ["-O3"] + version_dependent_macros,
-                "nvcc": nvcc_args_transformer if not IS_ROCM_PYTORCH else hipcc_args_transformer, 
-            },
-        )
-    )
-
-
-#*********** scaled_masked_softmax_cuda   ****************
-    ext_modules.append(
-        CUDAExtension(
-            name='scaled_masked_softmax_cuda',
-            sources=[
-                'csrc/megatron/scaled_masked_softmax_cpu.cpp',
-                'csrc/megatron/scaled_masked_softmax_cuda.cu',
-            ],
-            include_dirs=[os.path.join(this_dir, 'csrc'),
-                          os.path.join(this_dir, 'csrc/megatron')],
-            extra_compile_args={
-                'cxx': ['-O3'] + version_dependent_macros,
-                'nvcc':nvcc_args_transformer if not IS_ROCM_PYTORCH else hipcc_args_transformer,
-                }
-            )
-        )
-
-#***********  scaled_softmax_cuda   ****************
-    ext_modules.append(
-        CUDAExtension(
-            name="scaled_softmax_cuda",
-            sources=[
-                "csrc/megatron/scaled_softmax_cpu.cpp", 
-                "csrc/megatron/scaled_softmax_cuda.cu",
-            ],
-            include_dirs=[os.path.join(this_dir, "csrc")],
-            extra_compile_args={
-                "cxx": ["-O3"] + version_dependent_macros,
-                "nvcc":nvcc_args_transformer if not IS_ROCM_PYTORCH else hipcc_args_transformer,
-                }
-            )
-        )
-
-#***********  fused_rotary_positional_embedding   ****************
-    ext_modules.append(
-        CUDAExtension(
-            name="fused_rotary_positional_embedding",
-            sources=[
-                "csrc/megatron/fused_rotary_positional_embedding.cpp",
-                "csrc/megatron/fused_rotary_positional_embedding_cuda.cu",
-            ],
-            include_dirs=[os.path.join(this_dir, "csrc")],
-            extra_compile_args={
-                "cxx": ["-O3"] + version_dependent_macros,
-                "nvcc":nvcc_args_transformer if not IS_ROCM_PYTORCH else hipcc_args_transformer,
-                }
-            )
-        )
+        ext_modules.append(
+            CUDAExtension(name='fused_dense_cuda',
+                          sources=['csrc/fused_dense.cpp',
+                                   'csrc/fused_dense_cuda.cu'],
+                          extra_compile_args={'cxx': ['-O3'] + version_dependent_macros,
+                                              'nvcc':['-O3'] + version_dependent_macros}))
+        nvcc_args_transformer = ['-O3',
+                                 '-U__CUDA_NO_HALF_OPERATORS__',
+                                 '-U__CUDA_NO_HALF_CONVERSIONS__',
+                                 '--expt-relaxed-constexpr',
+                                 '--expt-extended-lambda'] + version_dependent_macros
+        hipcc_args_transformer = ['-O3',
+                                 '-U__CUDA_NO_HALF_OPERATORS__',
+                                 '-U__CUDA_NO_HALF_CONVERSIONS__'] + version_dependent_macros
+        ext_modules.append(
+            CUDAExtension(name='scaled_upper_triang_masked_softmax_cuda',
+                          sources=['csrc/megatron/scaled_upper_triang_masked_softmax.cpp',
+                                   'csrc/megatron/scaled_upper_triang_masked_softmax_cuda.cu'],
+                          include_dirs=[os.path.join(this_dir, 'csrc')],
+                          extra_compile_args={'cxx': ['-O3'] + version_dependent_macros,
+                                              'nvcc':nvcc_args_transformer if not IS_ROCM_PYTORCH else hipcc_args_transformer}))
+        ext_modules.append(
+            CUDAExtension(name='scaled_masked_softmax_cuda',
+                          sources=['csrc/megatron/scaled_masked_softmax.cpp',
+                                   'csrc/megatron/scaled_masked_softmax_cuda.cu'],
+                          include_dirs=[os.path.join(this_dir, 'csrc'),
+                                        os.path.join(this_dir, 'csrc/megatron')],
+                          extra_compile_args={'cxx': ['-O3'] + version_dependent_macros,
+                                              'nvcc':nvcc_args_transformer if not IS_ROCM_PYTORCH else hipcc_args_transformer}))
 
 
 if "--bnp" in sys.argv or "--cuda_ext" in sys.argv:

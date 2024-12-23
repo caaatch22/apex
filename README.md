@@ -113,7 +113,7 @@ To install Apex from source, we recommend using the nightly Pytorch obtainable f
 
 The latest stable release obtainable from https://pytorch.org should also work.
 
-## ROCm
+### Rocm
 Apex on ROCm supports both python only build and extension build.
 Note: Pytorch version recommended is >=1.5 for extension build.
 
@@ -133,7 +133,7 @@ python setup.py install
 | ``1.0.0`` | release/1.0.0 | ``2.0`` and older |
 
 
-The relation between APEX and ROCm PyTorch is maintained in file `related_commits` in [ROCm PyTorch release branches](https://github.com/ROCm/pytorch/branches/all?query=release) in the following format. 
+The relation between APEX and ROCm PyTorch is maintained in file `related_commits` in ROCm PyTorch release branches in the following format. 
 
 ```
 ubuntu|pytorch|apex|release/1.0.0|06c33eee43f7a22f3ed7d9c3e5be0ddd757dc345|https://github.com/ROCmSoftwarePlatform/apex
@@ -149,13 +149,6 @@ python setup.py install --cpp_ext --cuda_ext
 
 ```
 Note that using --cuda_ext flag to install Apex will also enable all the extensions supported on ROCm including "--distributed_adam", "--distributed_lamb", "--bnp", "--xentropy", "--deprecated_fused_adam", "--deprecated_fused_lamb", and "--fast_multihead_attn".
-
-### Enable hipblasLT on ROCm
-hipblasLT is supported only on mi300 (gfx942) only.  
-python setup.py automatically builds apex with hipblasLT support only if GPU device id is gfx942  
-To verify if hipblasLT support is enabled, check the build logs  
-INFO: IS_HIPBLASLT_SUPPORTED value is True  ==> indicates apex is built with hipblasLT support  
-INFO: IS_HIPBLASLT_SUPPORTED value is False  
 
 ### Linux
 For performance and full functionality, we recommend installing Apex with
