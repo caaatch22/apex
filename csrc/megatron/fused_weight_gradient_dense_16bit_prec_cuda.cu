@@ -48,7 +48,7 @@ void gemmex_wrapper_fp16(
       C,
       CUDA_R_16BF,
       ldc,
-      CUDA_R_32F,
+      HIPBLAS_COMPUTE_32F,
       CUBLAS_GEMM_DEFAULT_TENSOR_OP));
 }
 
@@ -86,7 +86,7 @@ void gemmex_wrapper_fp16(
       C,
       CUDA_R_16F,
       ldc,
-      CUDA_R_32F,
+      HIPBLAS_COMPUTE_32F,
       CUBLAS_GEMM_DEFAULT_TENSOR_OP));
 }
 
